@@ -1,9 +1,11 @@
+import path from "path"
 import { getBearerToken, validateJWT } from "../auth";
 import { respondWithJSON } from "./json";
 import { getVideo, updateVideo } from "../db/videos";
 import type { ApiConfig } from "../config";
 import type { BunRequest } from "bun";
 import { BadRequestError, NotFoundError, UserForbiddenError } from "./errors";
+import { randomBytes } from "crypto";
 
 type Thumbnail = {
   data: ArrayBuffer;
@@ -60,7 +62,21 @@ export async function handlerUploadThumbnail(cfg: ApiConfig, req: BunRequest) {
   }
 
   const mediaType = thumbnail.type
-  const buffer = await thumbnail.arrayBuffer();
+  if (!mediaType) throw new BadRequestError("Missing Content-Type for thumbnail");
+  if (mediaType !== "image/jpeg" && mediaType !== "image/png" ) {
+    throw new BadRequestError("Invalid Content-Type for thumbnail")
+  };
+
+  const arrayBuffer = await thumbnail.arrayBuffer();
+  const imageBytes = Buffer.from(arrayBuffer);
+
+  const randomName = randomBytes(32).toString("base64url");
+
+  const filetype = "."+mediaType.split("/")[1]
+  const urlPath = `/assets/${randomName}${filetype}`
+  const fullPath = path.join(cfg.assetsRoot, `${randomName}${filetype}`)
+  await Bun.write(fullPath, imageBytes)
+  
   const video = getVideo(cfg.db, videoId);
   if (!video) {
     throw new NotFoundError("Couldn't find video");
@@ -68,13 +84,9 @@ export async function handlerUploadThumbnail(cfg: ApiConfig, req: BunRequest) {
   if (video.userID !== userID) {
     throw new UserForbiddenError("Not authorized to update this video");
   }
-  
-  videoThumbnails.set(videoId, {
-    data: buffer,
-    mediaType,
-  });
-  const url = `http://localhost:${cfg.port}/api/thumbnails/${videoId}`;
-  video.thumbnailURL = url;
+
+  const port = cfg.port
+  video.thumbnailURL = `http://localhost:${port}${urlPath}`
   updateVideo(cfg.db, video);
 
   return respondWithJSON(200, video);
