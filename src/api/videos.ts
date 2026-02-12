@@ -3,10 +3,12 @@ import { type ApiConfig } from "../config";
 import { type BunRequest } from "bun";
 import { BadRequestError, NotFoundError, UserForbiddenError } from "./errors";
 import { getBearerToken, validateJWT } from "../auth";
-import { getVideo, updateVideo } from "../db/videos";
+import { getVideo, updateVideo, type Video } from "../db/videos";
 import { randomBytes } from "crypto";
 import path from "path";
 import { rm } from "fs/promises";
+
+
 
 export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
   const videoId = (req.params as { videoId?: string }).videoId;
@@ -28,42 +30,57 @@ export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
   if (!mediaType) throw new BadRequestError("Missing Content-Type for video");
   if (mediaType !== videoType) throw new BadRequestError("Invalid Content-Type for video, only MP4 is allowed");
 
-  const videoData = getVideo(cfg.db, videoId);
-  if (!videoData) throw new NotFoundError("Couldn't find video");
-  if (videoData.userID !== userID) throw new UserForbiddenError("Not authorized to update this video");
-  
+  const videoTemp = getVideo(cfg.db, videoId);
+  if (!videoTemp) throw new NotFoundError("Couldn't find video");
+  if (videoTemp.userID !== userID) throw new UserForbiddenError("Not authorized to update this video");
+  const tempFilePath = path.join("/tmp", `${videoId}.mp4`);
   const arrayBuffer = await video.arrayBuffer();
   const videoBytes = Buffer.from(arrayBuffer);
-  const randomName = randomBytes(32).toString("base64url");
-  const filetype = "."+mediaType.split("/")[1]
-  //const fullPath = path.join(cfg.assetsRoot, `${randomName}${filetype}`)
-  const tempFilePath = path.join("/tmp", `${videoId}.mp4`);
-  await Bun.write(tempFilePath, videoBytes)
+
   
+  //writing, setting url and func calls
+  await Bun.write(tempFilePath, videoBytes)
   const aspectRatio = await getVideoAspectRatio(tempFilePath)
+  let key = `${aspectRatio}/${videoId}.mp4`;
+  const url = `${key}`
+  videoTemp.videoURL = url;
   const processedVid = await processVideoForFastStart(tempFilePath)
   
+
   //S3
-  let key = `${aspectRatio}/${videoId}.mp4`;
   const body = Bun.file(processedVid)
   if (!await body.exists()) {
   throw new Error("Processed file was not created");
   }
-  
   const s3file = cfg.s3Client.file(key, { bucket: cfg.s3Bucket });
   await s3file.write(body, { type: videoType });
   
 
-  const url = `https://${cfg.s3Bucket}.s3.${cfg.s3Region}.amazonaws.com/${key}`
-  videoData.videoURL = url;
-
+  //Sign and update
+  const videoData = await dbVideoToSignedVideo(cfg, videoTemp)
   updateVideo(cfg.db, videoData);
 
+
   await Promise.all([rm(tempFilePath, { force: true })]);
-  return respondWithJSON(200, video);
+  return respondWithJSON(200, videoData);
 }
 
 
+
+
+
+
+
+//Helpers
+
+async function generatePresignedURL(cfg: ApiConfig, key: string, expireTime: number) {
+  return cfg.s3Client.presign(key, { expiresIn: expireTime });
+}
+
+export async function dbVideoToSignedVideo(cfg: ApiConfig, video: Video) {
+  video.videoURL = await generatePresignedURL(cfg, video.videoURL!, 360)
+  return video;
+}
 
 
 async function getVideoAspectRatio(filePath: string) {
