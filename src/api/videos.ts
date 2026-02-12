@@ -4,7 +4,6 @@ import { type BunRequest } from "bun";
 import { BadRequestError, NotFoundError, UserForbiddenError } from "./errors";
 import { getBearerToken, validateJWT } from "../auth";
 import { getVideo, updateVideo, type Video } from "../db/videos";
-import { randomBytes } from "crypto";
 import path from "path";
 import { rm } from "fs/promises";
 
@@ -42,7 +41,7 @@ export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
   await Bun.write(tempFilePath, videoBytes)
   const aspectRatio = await getVideoAspectRatio(tempFilePath)
   let key = `${aspectRatio}/${videoId}.mp4`;
-  const url = `${key}`
+  const url = `${cfg.s3CfDistribution}/${key}`
   videoTemp.videoURL = url;
   const processedVid = await processVideoForFastStart(tempFilePath)
   
@@ -55,14 +54,11 @@ export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
   const s3file = cfg.s3Client.file(key, { bucket: cfg.s3Bucket });
   await s3file.write(body, { type: videoType });
   
-
-  //Sign and update
-  const videoData = await dbVideoToSignedVideo(cfg, videoTemp)
-  updateVideo(cfg.db, videoData);
+  updateVideo(cfg.db, videoTemp);
 
 
   await Promise.all([rm(tempFilePath, { force: true })]);
-  return respondWithJSON(200, videoData);
+  return respondWithJSON(200, videoTemp);
 }
 
 
@@ -73,6 +69,8 @@ export async function handlerUploadVideo(cfg: ApiConfig, req: BunRequest) {
 
 //Helpers
 
+/*
+//discontinued
 async function generatePresignedURL(cfg: ApiConfig, key: string, expireTime: number) {
   return cfg.s3Client.presign(key, { expiresIn: expireTime });
 }
@@ -81,7 +79,7 @@ export async function dbVideoToSignedVideo(cfg: ApiConfig, video: Video) {
   video.videoURL = await generatePresignedURL(cfg, video.videoURL!, 360)
   return video;
 }
-
+*/
 
 async function getVideoAspectRatio(filePath: string) {
   const proc = Bun.spawn({
